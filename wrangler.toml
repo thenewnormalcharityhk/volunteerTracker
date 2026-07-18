@@ -1,0 +1,60 @@
+name = "calendly-notion-sync"
+main = "src/index.ts"
+compatibility_date = "2025-05-01"
+account_id = "d45b0f6511ec35ccf10e9904a851fe6d"  # The New Normal (tech@thenewnormalcharityhk.org)
+
+# Secrets are set via `wrangler secret put`:
+#   CALENDLY_PAT
+#   CALENDLY_WEBHOOK_SIGNING_KEY
+#   NOTION_TOKEN
+#
+# Non-secret config below.
+
+# Daily alert cron — 01:00 UTC ≈ 09:00 Hong Kong time.
+[triggers]
+crons = ["0 1 * * *"]
+
+# KV namespace used to dedupe alerts so they don't re-fire every day.
+[[kv_namespaces]]
+binding = "ALERTS_KV"
+id = "8ff33ddfc2a643bd9547259609f73f8e"
+
+[vars]
+# Notion *database* IDs (classic 2022-06-28 API queries by database_id).
+NOTION_GROUPS_DB_ID     = "94a4bd87da2c8316b730017be96ea0a9"
+NOTION_TRAINING_DB_ID   = "baa4bd87da2c82b28944817054de4bfc"
+NOTION_VOLUNTEERS_DB_ID = "c3f4bd87da2c82e6a07f01475d133397"
+NOTION_FLAGS_DB_ID      = "ac54bd87da2c83d793a201bcd28f3c1b"
+# Defaults — override per environment.
+NOTION_API_VERSION     = "2022-06-28"
+CALENDLY_API_BASE      = "https://api.calendly.com"
+DEFAULT_GROUP_STATUS   = "Pending review"
+
+# ── Alert thresholds (days / counts). Edit without touching code. ──
+HOST_INACTIVE_DAYS       = "90"   # Active Host with no group in N days → Check in (scenario 3)
+SHADOW_INACTIVE_DAYS     = "30"   # Shadow with no session in N days → alert (scenario 2)
+IN_TRAINING_STALE_DAYS   = "180"  # In Training longer than N days → alert (scenario 2)
+MILESTONE_GROUPS         = "10"   # Total groups hosted milestone (scenario 4)
+FREQUENT_WEEK_LIMIT      = "1"    # > N groups in a rolling week → frequent host (scenario 7)
+FREQUENT_MONTH_LIMIT     = "4"    # > N groups in a rolling month → frequent host (scenario 7)
+SHADOW_SIGNOFF_PROMPT    = "6"    # Shadow reaches N groups → prompt host (scenario 8)
+SHADOW_SIGNOFF_ESCALATE  = "8"    # Shadow still Shadow at N groups → notify coordinator (scenario 8b)
+SHADOW_READINESS_GROUPS  = "4"    # Shadow with > N groups in 3 months → readiness check (scenario 9)
+
+# ── Alert behaviour ──
+# When "true", the cron computes and logs alerts but sends NO notifications and
+# makes NO Notion status changes. Flip to "false" to go live.
+ALERTS_DRY_RUN          = "true"
+# Comma-separated emails (used by email channel; Slack uses the webhook secret).
+ALERT_EMAIL_COORDINATOR = "christy@thenewnormalcharityhk.org"
+ALERT_EMAIL_CEO         = "jess@thenewnormalcharityhk.org"
+ALERT_EMAIL_DSL         = "cindy@thenewnormalcharityhk.org"
+ALERT_EMAIL_FROM        = "alerts@thenewnormalcharityhk.org"
+
+# Secrets (wrangler secret put):
+#   SLACK_WEBHOOK_URL   — Slack incoming webhook (coordinator channel)
+#   RESEND_API_KEY      — optional; enables email. Without it, email is skipped.
+#   ALERTS_RUN_TOKEN    — optional; protects the manual GET /run-alerts endpoint
+
+# [observability]
+# enabled = true

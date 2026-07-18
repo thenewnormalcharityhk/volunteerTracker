@@ -1,0 +1,27 @@
+{
+  "name": "calendly-notion-sync",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloudflare Worker that syncs Calendly bookings to The New Normal HK's Notion Groups database.",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "typecheck": "tsc --noEmit",
+    "setup:webhook": "tsx scripts/setup-webhook.ts",
+    "list:webhooks": "tsx scripts/list-webhooks.ts",
+    "delete:webhook": "tsx scripts/delete-webhook.ts",
+    "backfill": "tsx scripts/backfill.ts",
+    "restore:hosts": "tsx scripts/restore-hosts.ts",
+    "alerts": "tsx scripts/run-alerts.ts",
+    "calendly:whoami": "tsx scripts/whoami.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20251101.0",
+    "@types/node": "^25.9.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.0",
+    "wrangler": "^3.95.0"
+  }
+}
