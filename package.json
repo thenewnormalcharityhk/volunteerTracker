@@ -17,6 +17,7 @@
     "verify:hosts": "tsx scripts/verify-hosts.ts",
     "alerts": "tsx scripts/run-alerts.ts",
     "calendly:whoami": "tsx scripts/whoami.ts",
+    "setup:schema": "tsx scripts/setup-schema.ts",
     "test": "tsx test/roles.test.ts"
   },
   "devDependencies": {
