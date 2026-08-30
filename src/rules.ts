@@ -203,6 +203,10 @@ export function runRules(
         rule: "host-inactivity",
         volunteerId: v.id,
         volunteerName: v.name,
+        // Keyed on the date they last hosted, so baselining (?seed=1) silences
+        // the lapse they are already in without silencing them forever: host
+        // again and lastHosted moves, so a future lapse is a new key.
+        dedupeKey: `host-inactivity:${v.id}:${isoDate(a.lastHosted)}`,
         messages: [
           coordOnly(
             `⏰ ${v.name} hasn't hosted in ${days} days → Check in`,
