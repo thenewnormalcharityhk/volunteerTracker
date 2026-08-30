@@ -157,6 +157,25 @@ export class NotionClient {
     const properties = buildGroupProperties(input);
 
     if (existingId) {
+      // Don't clobber the coordinator's work on a re-sync or backfill:
+      //   - Status is theirs once the row exists. Writing the default back
+      //     would flip every Confirmed row to Pending review.
+      //   - Keep a [CANCELED] prefix that markGroupCanceled added, otherwise
+      //     re-syncing a cancelled session quietly un-cancels its title.
+      delete properties.Status;
+      const current = await this.req<{
+        properties: Record<string, { type: string; title?: Array<{ plain_text: string }> }>;
+      }>(`/pages/${existingId}`);
+      const currentTitle =
+        Object.values(current.properties)
+          .find((p) => p.type === "title")
+          ?.title?.map((t) => t.plain_text)
+          .join("") ?? "";
+      if (currentTitle.startsWith("[CANCELED]")) {
+        properties["Group Name"] = {
+          title: [{ text: { content: `[CANCELED] ${input.groupName}` } }],
+        };
+      }
       await this.req(`/pages/${existingId}`, {
         method: "PATCH",
         body: JSON.stringify({ properties }),
