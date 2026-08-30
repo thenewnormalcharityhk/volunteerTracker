@@ -46,11 +46,22 @@ export interface Alert {
 
 const ACTIVE_HOST_STATUSES = new Set(["Active Host", "Buddy Host"]);
 
+// Per-volunteer session history, split by the role they booked in.
+//
+// Sessions where they hosted or co-hosted ("hosted") drive the host rules:
+// inactivity (3), frequent host (7) and milestones (4). Sessions they
+// shadowed drive the shadow progression rules: sign-off (8) and readiness (9).
+// Shadow inactivity (2) uses every session in any role, so a shadow who is
+// easing into co-hosting isn't flagged as having gone quiet.
 interface Agg {
   v: VolunteerRow;
-  dates: Date[]; // group dates (desc), excluding canceled
-  total: number;
-  last: Date | null;
+  hostedDates: Date[]; // desc, excluding canceled
+  shadowDates: Date[]; // desc, excluding canceled
+  allDates: Date[]; // desc, union of the two
+  hostedTotal: number;
+  shadowTotal: number;
+  lastHosted: Date | null;
+  lastAny: Date | null;
 }
 
 function notionUrl(id: string): string {
@@ -80,26 +91,51 @@ function monthBucket(d: Date): string {
   return `${d.getUTCFullYear()}M${d.getUTCMonth() + 1}`;
 }
 
-// Build per-volunteer aggregation of the groups they hosted or co-hosted.
+// Build per-volunteer aggregation of the groups they took part in, keeping
+// hosted and shadowed sessions apart. Shadow membership comes from the Groups
+// DB "Shadow" relation, populated from the Calendly booking question
+// "Are you joining as host / co-host / shadow host?".
 export function aggregate(volunteers: VolunteerRow[], groups: GroupRow[]): Map<string, Agg> {
   const byId = new Map<string, Agg>();
-  for (const v of volunteers) byId.set(v.id, { v, dates: [], total: 0, last: null });
+  for (const v of volunteers) {
+    byId.set(v.id, {
+      v,
+      hostedDates: [],
+      shadowDates: [],
+      allDates: [],
+      hostedTotal: 0,
+      shadowTotal: 0,
+      lastHosted: null,
+      lastAny: null,
+    });
+  }
 
   for (const g of groups) {
     if (!g.date) continue;
     if (g.name.startsWith("[CANCELED]")) continue;
     const d = new Date(g.date);
     if (Number.isNaN(d.getTime())) continue;
-    const participants = new Set([...g.hostIds, ...g.coHostIds]);
-    for (const pid of participants) {
-      const agg = byId.get(pid);
-      if (agg) agg.dates.push(d);
+
+    const shadows = new Set(g.shadowIds);
+    for (const pid of shadows) {
+      byId.get(pid)?.shadowDates.push(d);
+    }
+    // A shadow on a session isn't also counted as having hosted it.
+    for (const pid of new Set([...g.hostIds, ...g.coHostIds])) {
+      if (shadows.has(pid)) continue;
+      byId.get(pid)?.hostedDates.push(d);
     }
   }
+
+  const desc = (a: Date, b: Date) => b.getTime() - a.getTime();
   for (const agg of byId.values()) {
-    agg.dates.sort((a, b) => b.getTime() - a.getTime());
-    agg.total = agg.dates.length;
-    agg.last = agg.dates[0] ?? null;
+    agg.hostedDates.sort(desc);
+    agg.shadowDates.sort(desc);
+    agg.allDates = [...agg.hostedDates, ...agg.shadowDates].sort(desc);
+    agg.hostedTotal = agg.hostedDates.length;
+    agg.shadowTotal = agg.shadowDates.length;
+    agg.lastHosted = agg.hostedDates[0] ?? null;
+    agg.lastAny = agg.allDates[0] ?? null;
   }
   return byId;
 }
@@ -157,8 +193,12 @@ export function runRules(
     }
 
     // ── Scenario 3: Host inactivity → Check in ──
-    if (ACTIVE_HOST_STATUSES.has(status) && a.last && daysBetween(now, a.last) > t.hostInactiveDays) {
-      const days = daysBetween(now, a.last);
+    if (
+      ACTIVE_HOST_STATUSES.has(status) &&
+      a.lastHosted &&
+      daysBetween(now, a.lastHosted) > t.hostInactiveDays
+    ) {
+      const days = daysBetween(now, a.lastHosted);
       alerts.push({
         rule: "host-inactivity",
         volunteerId: v.id,
@@ -166,7 +206,7 @@ export function runRules(
         messages: [
           coordOnly(
             `⏰ ${v.name} hasn't hosted in ${days} days → Check in`,
-            `${v.name} (was ${status}) last hosted ${isoDate(a.last)} — ${days} days ago. Status set to "Check in".\n${link}`,
+            `${v.name} (was ${status}) last hosted ${isoDate(a.lastHosted)} — ${days} days ago. Status set to "Check in".\n${link}`,
           ),
         ],
         mutation: { status: "Check in" },
@@ -174,7 +214,7 @@ export function runRules(
           volunteerId: v.id,
           type: "System",
           summary: `Auto-set to Check in — ${days} days since last hosted`,
-          content: `No hosted session since ${isoDate(a.last)} (> ${t.hostInactiveDays} days). Status set to Check in (Scenario 3).`,
+          content: `No hosted session since ${isoDate(a.lastHosted)} (> ${t.hostInactiveDays} days). Status set to Check in (Scenario 3).`,
           addedBy: "System (daily alerts)",
           dateAddedIso: isoDate(now),
           visibleToVolunteer: false,
@@ -185,8 +225,8 @@ export function runRules(
 
     // ── Scenario 7: Frequent host ──
     if (ACTIVE_HOST_STATUSES.has(status)) {
-      const wk = countWithin(a.dates, now, 7);
-      const mo = countWithin(a.dates, now, 30);
+      const wk = countWithin(a.hostedDates, now, 7);
+      const mo = countWithin(a.hostedDates, now, 30);
       if (wk > t.frequentWeekLimit || mo > t.frequentMonthLimit) {
         alerts.push({
           rule: "frequent-host",
@@ -222,9 +262,11 @@ export function runRules(
       }
     }
     if (status === "Shadow") {
-      const noShadow = !a.last || daysBetween(now, a.last) > t.shadowInactiveDays;
+      const noShadow = !a.lastAny || daysBetween(now, a.lastAny) > t.shadowInactiveDays;
       if (noShadow) {
-        const detail = a.last ? `last session ${isoDate(a.last)} (${daysBetween(now, a.last)} days ago)` : "no sessions logged yet";
+        const detail = a.lastAny
+          ? `last session ${isoDate(a.lastAny)} (${daysBetween(now, a.lastAny)} days ago, ${a.shadowTotal} shadowed in total)`
+          : "no sessions logged yet";
         alerts.push({
           rule: "shadow-inactivity",
           volunteerId: v.id,
@@ -242,7 +284,7 @@ export function runRules(
 
     // ── Scenario 8 + 9: Shadow progression ──
     if (status === "Shadow") {
-      if (a.total >= t.shadowSignoffEscalate) {
+      if (a.shadowTotal >= t.shadowSignoffEscalate) {
         alerts.push({
           rule: "shadow-signoff-escalate",
           volunteerId: v.id,
@@ -250,12 +292,12 @@ export function runRules(
           dedupeKey: `signoff-escalate:${v.id}`,
           messages: [
             coordOnly(
-              `📣 ${v.name} still Shadow at ${a.total} groups`,
-              `${v.name} has reached ${a.total} groups but is still Shadow (≥ ${t.shadowSignoffEscalate}). Coordinator check-in needed (Scenario 8b).\n${link}`,
+              `📣 ${v.name} still Shadow at ${a.shadowTotal} shadowed sessions`,
+              `${v.name} has shadowed ${a.shadowTotal} sessions but is still Shadow (≥ ${t.shadowSignoffEscalate}). Coordinator check-in needed (Scenario 8b).\n${link}`,
             ),
           ],
         });
-      } else if (a.total >= t.shadowSignoffPrompt) {
+      } else if (a.shadowTotal >= t.shadowSignoffPrompt) {
         alerts.push({
           rule: "shadow-signoff-prompt",
           volunteerId: v.id,
@@ -263,13 +305,13 @@ export function runRules(
           dedupeKey: `signoff-prompt:${v.id}`,
           messages: [
             coordOnly(
-              `✅ ${v.name} ready for sign-off? (${a.total} groups)`,
-              `${v.name} (Shadow) has reached ${a.total} groups (≥ ${t.shadowSignoffPrompt}). Prompt the buddy host: "Are you ready to sign off?" (Scenario 8).\n${link}`,
+              `✅ ${v.name} ready for sign-off? (${a.shadowTotal} shadowed sessions)`,
+              `${v.name} (Shadow) has shadowed ${a.shadowTotal} sessions (≥ ${t.shadowSignoffPrompt}). Prompt the buddy host: "Are you ready to sign off?" (Scenario 8).\n${link}`,
             ),
           ],
         });
       }
-      const recent = countWithin(a.dates, now, 90);
+      const recent = countWithin(a.shadowDates, now, 90);
       if (recent > t.shadowReadinessGroups) {
         alerts.push({
           rule: "shadow-readiness",
@@ -278,8 +320,8 @@ export function runRules(
           dedupeKey: `readiness:${v.id}:${monthBucket(now)}`,
           messages: [
             coordOnly(
-              `🧭 ${v.name}: ${recent} groups in 3 months`,
-              `${v.name} (Shadow) completed ${recent} groups in the last 3 months (> ${t.shadowReadinessGroups}). Check in — not yet ready for sign-off (Scenario 9).\n${link}`,
+              `🧭 ${v.name}: ${recent} shadowed sessions in 3 months`,
+              `${v.name} (Shadow) shadowed ${recent} sessions in the last 3 months (> ${t.shadowReadinessGroups}). Check in — not yet ready for sign-off (Scenario 9).\n${link}`,
             ),
           ],
         });
@@ -287,7 +329,7 @@ export function runRules(
     }
 
     // ── Scenario 4: Milestones ──
-    if (a.total === 1) {
+    if (a.hostedTotal === 1) {
       alerts.push({
         rule: "milestone-first-group",
         volunteerId: v.id,
@@ -310,11 +352,11 @@ export function runRules(
         },
       });
     }
-    if (a.total >= t.milestoneGroups) {
+    if (a.hostedTotal >= t.milestoneGroups) {
       const msgs: OutgoingMessage[] = [
         coordOnly(
           `🏅 Milestone: ${v.name} reached ${t.milestoneGroups} groups`,
-          `${v.name} has hosted ${a.total} groups (milestone ${t.milestoneGroups}). A personalised email ${v.email ? "has been sent to them" : "could not be sent (no email on file)"}.\n${link}`,
+          `${v.name} has hosted ${a.hostedTotal} groups (milestone ${t.milestoneGroups}). A personalised email ${v.email ? "has been sent to them" : "could not be sent (no email on file)"}.\n${link}`,
         ),
       ];
       if (v.email) {
@@ -339,7 +381,7 @@ export function runRules(
           volunteerId: v.id,
           type: "Milestone",
           summary: `${t.milestoneGroups} groups hosted`,
-          content: `Reached ${a.total} groups hosted (milestone ${t.milestoneGroups}). Personalised email ${v.email ? "sent" : "skipped — no email"} (Scenario 4i).`,
+          content: `Reached ${a.hostedTotal} groups hosted (milestone ${t.milestoneGroups}). Personalised email ${v.email ? "sent" : "skipped — no email"} (Scenario 4i).`,
           addedBy: "System (daily alerts)",
           dateAddedIso: isoDate(now),
           visibleToVolunteer: false,

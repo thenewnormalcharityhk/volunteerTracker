@@ -16,6 +16,10 @@ export interface GroupSyncInput {
   language: Language | null;
   hostVolunteerPageId: string | null;
   coHostVolunteerPageIds: string[];
+  shadowVolunteerPageIds: string[];
+  // When true, Co-host and Shadow are written even if empty, so a role change
+  // in Calendly clears the old value. Set only when Calendly supplied roles.
+  replaceRelations: boolean;
   location: string | null;
   status: "Pending review" | "Confirmed";
 }
@@ -42,6 +46,7 @@ export interface GroupRow {
   status: string | null; // Pending review | Confirmed
   hostIds: string[];
   coHostIds: string[];
+  shadowIds: string[];
 }
 
 export interface ConcernFlagRow {
@@ -282,6 +287,7 @@ export class NotionClient {
       status: readSelect(p, "Status"),
       hostIds: readRelation(p, "Host"),
       coHostIds: readRelation(p, "Co-host"),
+      shadowIds: readRelation(p, "Shadow"),
     }));
   }
 
@@ -383,9 +389,14 @@ function buildGroupProperties(input: GroupSyncInput): Record<string, unknown> {
   if (input.hostVolunteerPageId) {
     props.Host = { relation: [{ id: input.hostVolunteerPageId }] };
   }
-  if (input.coHostVolunteerPageIds.length > 0) {
+  if (input.replaceRelations || input.coHostVolunteerPageIds.length > 0) {
     props["Co-host"] = {
       relation: input.coHostVolunteerPageIds.map((id) => ({ id })),
+    };
+  }
+  if (input.replaceRelations || input.shadowVolunteerPageIds.length > 0) {
+    props.Shadow = {
+      relation: input.shadowVolunteerPageIds.map((id) => ({ id })),
     };
   }
   return props;

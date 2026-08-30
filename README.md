@@ -18,14 +18,42 @@ coordinator entries.
 
 | Calendly event type | Destination | Notes |
 |---|---|---|
-| Good Grief, Healing Hearts, Complicated Grief, Otherwise Employed, Cancer Connection, 好心程 *(all Chinese groups)* | **Groups DB** | `Group Type = Peer support group`. Host = first invitee, Co-hosts = rest. |
+| Good Grief, Healing Hearts, Complicated Grief, Otherwise Employed, Cancer Connection, 好心程 *(all Chinese groups)* | **Groups DB** | `Group Type = Peer support group`. Host / Co-host / Shadow read from the booking question (see below). |
 | English / Cantonese – Group Session with Clinical Advisor | **Training Log** | `Training Type = Clinical Q&A`, tutor inferred (Chris=Eng, Cindy=Canto). |
 | Refresher Training, Welcome Back Refresher | **Training Log** | `Training Type = Refresher`. |
 | Development sessions with Chris / Cindy | **Training Log** | `Training Type = Development session`, tutor parsed from name. |
 | Host Connection Space – English / Cantonese | **Training Log** | `Training Type = Host connection`. |
 | First round interview, Comms Strategist Volunteer Interview | **Skipped** | Recruitment — nothing written. |
 
-**Group events** create **one** Groups row (Host = earliest invitee by `created_at`, Co-hosts = the rest), `Status = Pending review`.
+**Group events** create **one** Groups row, `Status = Pending review`. Roles come from the
+required Calendly booking question on the peer-support event types:
+
+> **"Are you joining as host / co-host / shadow host?"** → `Host` / `Co-host` / `Shadow Host`
+
+The wording has changed four times since March 2025 and older versions offered
+different options (`shadow host or co-host`, later `shadow host or signed off
+host`). `parseAttendanceRole()` in `src/mapping.ts` handles all of them: any
+answer containing "shadow" is a shadow, "co-host" is a co-host, anything else
+containing "host" (including `Signed Off Host`) is a host.
+
+- **Host** — the earliest booker who declared a host role. `Groups.Host` is a
+  single relation, so additional declared hosts become co-hosts. If nobody
+  declared a host (older question wordings, or event types with no question at
+  all) the earliest non-shadow booker takes it, which is the pre-role convention.
+- **Co-host** — everyone else who isn't a shadow.
+- **Shadow** — everyone who answered a shadow option. Written to the
+  `Groups.Shadow` relation **and** as a Training Log row with
+  `Training Type = Shadow session`, so the session shows up both on the group
+  and in the volunteer's training history.
+
+When at least one invitee declared a role, Co-host and Shadow are overwritten on
+re-sync (including to empty), so someone who changes their answer doesn't linger
+in the wrong column. Without role data the sync leaves existing relations alone
+rather than wiping a coordinator's manual wiring.
+
+Three group event types carry **no** role question — Cancer Connection,
+好心程: 生離死別 and 男港出口 — so shadows on those are invisible to the sync. Add
+the question in Calendly if any of them come back into use.
 
 **Training events** create **one Training Log row per active attendee**, linked to the volunteer by email, `Source = Calendly sync`, `Attendance = Attended`. Idempotency key = `Calendly Event ID` + `Attendee Email`.
 
@@ -170,8 +198,10 @@ For end-to-end local testing, expose the dev worker via `cloudflared tunnel` or 
 | `Date` | Calendly `start_time` (ISO datetime) |
 | `Group Type` | `Peer support group` / `Q&A with Clinical Advisor` / `Training` (from `mapping.ts`) |
 | `Language` | Inferred from name when possible (`(Cantonese)`, Chinese chars, etc.), else blank |
-| `Host` | Relation to the Volunteers row whose **Email** matches the first invitee. |
+| `Host` | Relation to the Volunteers row whose **Email** matches the declared host. |
 | `Co-host` | Relations to Volunteers rows matching subsequent invitees. |
+| `Co-host` | Relations to everyone who booked as co-host (or, without role data, the remaining invitees). |
+| `Shadow` | Relations to everyone who booked as **Shadow Host**. |
 | `Calendly Event ID` | UUID — used as the idempotency key. |
 | `Status` | `Pending review` — coordinator confirms in Notion. |
 
@@ -194,13 +224,13 @@ lives in `src/mapping`-style modules: `src/rules.ts` (what fires), `src/alerts.t
 
 | # | Rule | Trigger | Action |
 |---|---|---|---|
-| 2 | Shadow inactivity | Shadow with no session in `SHADOW_INACTIVE_DAYS` (30), or In Training > `IN_TRAINING_STALE_DAYS` (180) | Notify coordinator |
+| 2 | Shadow inactivity | Shadow with no session **in any role** in `SHADOW_INACTIVE_DAYS` (30), or In Training > `IN_TRAINING_STALE_DAYS` (180) | Notify coordinator |
 | 3 | Host inactivity → Check in | Active/Buddy Host, last group > `HOST_INACTIVE_DAYS` (90) | Notify coordinator **+ set Status = Check in** + audit note |
 | 4 | Milestone | First group hosted; or `MILESTONE_GROUPS` (10) reached | Notify coordinator; email the volunteer at 10 + Milestone note |
 | 5 | Safeguarding → On Hold | Volunteer has an Open concern flag and isn't already On Hold | Notify coordinator + CEO + DSL **+ set Status = On Hold** + audit note |
 | 7 | Frequent host | > `FREQUENT_WEEK_LIMIT` (1) groups/week or > `FREQUENT_MONTH_LIMIT` (4)/month | Notify coordinator |
-| 8 | Shadow sign-off prompt | Shadow reaches `SHADOW_SIGNOFF_PROMPT` (6) groups; escalate at `SHADOW_SIGNOFF_ESCALATE` (8) | Notify coordinator |
-| 9 | Shadow readiness | Shadow with > `SHADOW_READINESS_GROUPS` (4) groups in 3 months | Notify coordinator |
+| 8 | Shadow sign-off prompt | Shadow reaches `SHADOW_SIGNOFF_PROMPT` (6) **shadowed** sessions; escalate at `SHADOW_SIGNOFF_ESCALATE` (8) | Notify coordinator |
+| 9 | Shadow readiness | Shadow with > `SHADOW_READINESS_GROUPS` (4) **shadowed** sessions in 3 months | Notify coordinator |
 
 Thresholds are `[vars]` in `wrangler.toml` — change them without touching code.
 
@@ -245,6 +275,7 @@ alerts but sends nothing and changes no Notion records. To activate:
 ### Testing alerts
 
 ```bash
+npm test                       # offline unit checks — role parsing + aggregation, no secrets needed
 npm run alerts                 # local DRY RUN — reads live Notion, prints what would fire
 npm run alerts -- --live       # local LIVE run (respects configured channels)
 
@@ -256,6 +287,12 @@ curl ".../run-alerts?seed=1&token=<TOKEN>"  # baseline dedupe only
 
 ## Roadmap / not-yet-built
 
-- ❌ Per-volunteer training log auto-creation from group *attendance*. Calendly only knows the host/co-host of a session, not who shadowed it — so shadow-session counts for scenarios 2/8/9 are approximated from the volunteer's linked groups. A cleaner shadow-session model would improve those.
+- ✅ ~~Shadow-session counts approximated from linked groups.~~ Now read from the
+  Calendly role question and stored on `Groups.Shadow` + a `Shadow session`
+  Training Log row. Scenarios 8 and 9 count shadowed sessions; scenarios 3, 4
+  and 7 count hosted sessions only.
+- ❌ Duplicate volunteer emails. Several people book under more than one address
+  (three for Otto Ng, three for Mandy Wong), which splits their session counts.
+  Merging these on the Volunteers rows would fix the totals.
 - ❌ Real-time safeguarding (scenario 5 currently fires on the daily cron, not the instant a flag is added). If sub-day urgency is needed, add a Notion automation or a button that calls the worker.
 - ❌ Concern flag auto-creation. Per spec, flags are manual coordinator entries.

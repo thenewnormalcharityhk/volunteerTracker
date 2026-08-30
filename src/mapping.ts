@@ -22,6 +22,7 @@ export type TrainingType =
   | "Clinical Q&A"
   | "Development session"
   | "Host connection"
+  | "Shadow session"
   | "Other";
 
 export type Routing =
@@ -66,6 +67,48 @@ export function classifyEvent(eventTypeName: string): Routing {
     if (lower.includes(rule.match)) return rule.route;
   }
   return DEFAULT_ROUTE;
+}
+
+// ── Attendance role (host / co-host / shadow) ──
+//
+// The peer-support group event types carry a required Calendly booking
+// question:
+//
+//   "Are you joining as host / co-host / shadow host?"
+//     → "Host" | "Co-host" | "Shadow Host"
+//
+// It arrives on the invitee as `questions_and_answers`. This is the real
+// source of shadow-session data; before it was read, shadows were written
+// into Co-host and their sessions were only approximated.
+//
+// Only call this for events classified as `kind: "group"`. Training events
+// carry different questions that would misread here — Host Connection Space
+// asks "Are you hosting or attending?" and Welcome Back Refresher asks
+// whether you are a "Signed Off Host" or "Shadow Host", which describes the
+// volunteer's status rather than a session they shadowed.
+//
+// Returns null when the event type has no role question, or the answer is
+// unrecognised. Callers fall back to the old first-booker-is-host rule.
+
+export type AttendanceRole = "host" | "co-host" | "shadow";
+
+export function parseAttendanceRole(
+  questionsAndAnswers?: Array<{ question: string; answer: string }>,
+): AttendanceRole | null {
+  if (!questionsAndAnswers?.length) return null;
+  for (const qa of questionsAndAnswers) {
+    const question = (qa.question ?? "").toLowerCase();
+    // Only the role question mentions all three; guards against future
+    // free-text questions that happen to contain the word "host".
+    if (!question.includes("shadow")) continue;
+    const answer = (qa.answer ?? "").trim().toLowerCase();
+    if (!answer) continue;
+    // Order matters: "Shadow Host" and "Co-host" both contain "host".
+    if (answer.includes("shadow")) return "shadow";
+    if (answer.includes("co-host") || answer.includes("co host")) return "co-host";
+    if (answer.includes("host")) return "host";
+  }
+  return null;
 }
 
 // Infer the tutor / clinical advisor from the event name.

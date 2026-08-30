@@ -83,6 +83,7 @@ async function main() {
   let trainingRows = 0;
   let skipped = 0;
   let unmatched = 0;
+  let shadowRows = 0;
 
   do {
     const page = await calendly.listScheduledEvents(
@@ -133,10 +134,13 @@ async function main() {
           );
         } else {
           groups++;
+          shadowRows += (res.trainingRowsCreated ?? 0) + (res.trainingRowsUpdated ?? 0);
           const action = res.created ? "+created" : "~updated";
+          const roleSource = res.rolesFromCalendly ? "" : "  roles=inferred";
           console.log(
             `  ${action} ${tag}  [${res.groupType}]  host=${res.matchedHost ? "ok" : "MISS"}` +
-              `  co-host=${res.matchedCoHostCount}${unmatchedSuffix}`,
+              `  co-host=${res.matchedCoHostCount}  shadow=${res.matchedShadowCount}` +
+              `${roleSource}${unmatchedSuffix}`,
           );
         }
       } catch (err) {
@@ -150,7 +154,8 @@ async function main() {
 
   const trainingLabel = args.dryRun ? "training events" : "training rows";
   console.log(
-    `\nDone. ${total} events: ${groups} group rows, ${trainingRows} ${trainingLabel}, ${skipped} skipped (interviews). ` +
+    `\nDone. ${total} events: ${groups} group rows, ${trainingRows} ${trainingLabel}, ` +
+      `${shadowRows} shadow session rows, ${skipped} skipped (interviews). ` +
       `${unmatched} invitee email(s) had no matching Volunteers row.`,
   );
   if (unmatched > 0) {

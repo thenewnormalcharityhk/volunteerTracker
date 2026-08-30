@@ -14,8 +14,10 @@
     "delete:webhook": "tsx scripts/delete-webhook.ts",
     "backfill": "tsx scripts/backfill.ts",
     "restore:hosts": "tsx scripts/restore-hosts.ts",
+    "verify:hosts": "tsx scripts/verify-hosts.ts",
     "alerts": "tsx scripts/run-alerts.ts",
-    "calendly:whoami": "tsx scripts/whoami.ts"
+    "calendly:whoami": "tsx scripts/whoami.ts",
+    "test": "tsx test/roles.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20251101.0",
