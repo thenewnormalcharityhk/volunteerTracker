@@ -145,7 +145,10 @@ async function main() {
   for (const d of DESCRIBE) {
     if (!has(d.name)) { skipped.push(`"${d.name}" not found — no description set`); continue; }
     if (db.properties[d.name]?.description) { skipped.push(`"${d.name}" already has a description`); continue; }
-    properties[d.name] = { description: d.description };
+    // Notion rejects a property object containing only a description: it wants
+    // at least a name or a type key. Resend the existing name as a no-op so the
+    // relation's own configuration is left untouched.
+    properties[d.name] = { name: d.name, description: d.description };
     actions.push(`describe "${d.name}"`);
   }
 
