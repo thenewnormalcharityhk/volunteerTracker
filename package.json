@@ -16,6 +16,7 @@
     "restore:hosts": "tsx scripts/restore-hosts.ts",
     "verify:hosts": "tsx scripts/verify-hosts.ts",
     "unmatched": "tsx scripts/unmatched.ts",
+    "christy:page": "tsx scripts/christy-page.ts",
     "alerts": "tsx scripts/run-alerts.ts",
     "calendly:whoami": "tsx scripts/whoami.ts",
     "setup:schema": "tsx scripts/setup-schema.ts",
