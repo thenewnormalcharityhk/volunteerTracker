@@ -21,6 +21,7 @@
     "setup:schema": "tsx scripts/setup-schema.ts",
     "setup:rollups": "tsx scripts/setup-rollups.ts",
     "audit:volunteers": "tsx scripts/audit-volunteers.ts",
+    "tidy:volunteers": "tsx scripts/tidy-volunteers.ts",
     "test": "tsx test/roles.test.ts"
   },
   "devDependencies": {
