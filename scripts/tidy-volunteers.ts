@@ -26,8 +26,27 @@ const token = requireEnv("NOTION_TOKEN");
 const apiVersion = optionalEnv("NOTION_API_VERSION", "2022-06-28");
 const dbId = requireEnv("NOTION_VOLUNTEERS_DB_ID");
 
-interface PropSchema { id: string; name: string; type: string; description?: string | null }
+interface PropSchema {
+  id: string;
+  name: string;
+  type: string;
+  description?: string | null;
+  [key: string]: unknown;
+}
 interface Database { properties: Record<string, PropSchema> }
+
+// Notion rejects an update that doesn't carry enough of the property's own
+// definition. A relation is happy with just a name, but a rollup, formula or
+// number wants its config block resent. Rather than work out the rule for each
+// type, hand back whatever the property already had.
+const CARRY_CONFIG = new Set(["rollup", "formula", "number", "rich_text"]);
+
+function withConfig(prop: PropSchema, changes: Record<string, unknown>): Record<string, unknown> {
+  if (!CARRY_CONFIG.has(prop.type)) return changes;
+  return { [prop.type]: prop[prop.type] ?? {}, ...changes };
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function notion<T>(path: string, init: RequestInit = {}): Promise<T> {
   const res = await fetch(`https://api.notion.com/v1${path}`, {
@@ -125,40 +144,64 @@ async function main() {
   const db = await notion<Database>(`/databases/${dbId}`);
   const has = (n: string) => Boolean(db.properties[n]);
 
-  const actions: string[] = [];
+  // One property per request, so a rejection isolates to that property
+  // instead of failing the whole batch.
+  const planned: Array<{ label: string; body: Record<string, unknown> }> = [];
   const skipped: string[] = [];
-  const properties: Record<string, unknown> = {};
 
   for (const d of DELETE) {
     if (!has(d.name)) { skipped.push(`"${d.name}" already gone`); continue; }
-    properties[d.name] = null;
-    actions.push(`delete   "${d.name}"  (${d.why})`);
+    planned.push({ label: `delete   "${d.name}"  (${d.why})`, body: { [d.name]: null } });
   }
 
   for (const r of RENAME) {
     if (has(r.to)) { skipped.push(`"${r.to}" already renamed`); continue; }
     if (!has(r.from)) { skipped.push(`"${r.from}" not found — nothing to rename`); continue; }
-    properties[r.from] = { name: r.to, description: r.description };
-    actions.push(`rename   "${r.from}"  →  "${r.to}"`);
+    const prop = db.properties[r.from]!;
+    planned.push({
+      label: `rename   "${r.from}"  →  "${r.to}"`,
+      body: { [r.from]: withConfig(prop, { name: r.to, description: r.description }) },
+    });
   }
 
   for (const d of DESCRIBE) {
     if (!has(d.name)) { skipped.push(`"${d.name}" not found — no description set`); continue; }
-    if (db.properties[d.name]?.description) { skipped.push(`"${d.name}" already has a description`); continue; }
-    // Notion rejects a property object containing only a description: it wants
-    // at least a name or a type key. Resend the existing name as a no-op so the
-    // relation's own configuration is left untouched.
-    properties[d.name] = { name: d.name, description: d.description };
-    actions.push(`describe "${d.name}"`);
+    const prop = db.properties[d.name]!;
+    if (prop.description) { skipped.push(`"${d.name}" already has a description`); continue; }
+    planned.push({
+      label: `describe "${d.name}"`,
+      body: { [d.name]: withConfig(prop, { name: d.name, description: d.description }) },
+    });
   }
 
   for (const s of skipped) console.log(`  skipped  ${s}`);
-  for (const a of actions) console.log(`  ${dryRun ? "would " : ""}${a}`);
+  if (!planned.length) { console.log("\nNothing to change."); return; }
+  if (dryRun) {
+    for (const p of planned) console.log(`  would ${p.label}`);
+    console.log(`\n${planned.length} change(s) would be made.`);
+    return;
+  }
 
-  if (!actions.length) { console.log("\nNothing to change."); return; }
-  if (dryRun) { console.log(`\n${actions.length} change(s) would be made.`); return; }
-
-  await notion(`/databases/${dbId}`, { method: "PATCH", body: JSON.stringify({ properties }) });
+  let ok = 0;
+  const failures: string[] = [];
+  for (const p of planned) {
+    try {
+      await notion(`/databases/${dbId}`, { method: "PATCH", body: JSON.stringify({ properties: p.body }) });
+      console.log(`  ${p.label}`);
+      ok++;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`  FAILED ${p.label}\n         ${msg.split("\n").slice(-1)[0]}`);
+      failures.push(p.label);
+    }
+    await sleep(350); // Notion allows about three requests a second.
+  }
+  console.log(`\n${ok} of ${planned.length} applied.`);
+  if (failures.length) {
+    console.log(`Still to sort out:`);
+    for (const f of failures) console.log(`  ${f}`);
+    console.log(`Re-running is safe: anything already done is skipped.`);
+  }
 
   // Show the result the way a coordinator would read it.
   const after = await notion<Database>(`/databases/${dbId}`);
